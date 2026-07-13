@@ -174,7 +174,7 @@ export default function App() {
                       return (
                         <div key={i} onClick={()=>res&&setModal({kind:"cancel",ymd,hour:h,res,pwInput:"",pwErr:false})}
                           className={`h-11 flex items-center justify-center px-0.5 overflow-hidden transition-colors ${isPast&&!res?"opacity-30":""} ${res?"cursor-pointer":isToday?"bg-indigo-950":"bg-gray-900"}`}
-                          style={res?{backgroundColor:tc+(isFixed?"18":"28"),borderLeft:`3px ${isFixed?"dashed":"solid"} ${tc}${isFixed?"99":""}``}:{}}
+                          style={res?{backgroundColor:tc+(isFixed?"18":"28"),borderLeft:`3px ${isFixed?"dashed":"solid"} ${tc}${isFixed?"99":""}`}:{}}
                         >
                           {res&&<div className="w-full truncate text-center text-xs font-semibold px-0.5" style={{color:tc}}>{isFixed?"📌 ":""}{res.teamName||"예약"}</div>}
                         </div>
