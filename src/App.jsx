@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { storage } from "./firebase.js";
 
-const SLOT = 30, S_MIN = 540, E_MIN = 1380, MAX_DUR = 240;
-const SLOTS = Array.from({length:(E_MIN-S_MIN)/SLOT},(_,i)=>S_MIN+i*SLOT);
-const DAYS = ["월","화","수","목","금","토","일"];
-const ADMIN_PW = "0923";
-const COLORS = ["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#8b5cf6","#ec4899","#f43f5e","#06b6d4","#84cc16","#a855f7"];
-const WK_LABELS = ["2주 전","지난 주","이번 주","다음 주","다다음 주"];
+const SLOT=30,S_MIN=540,E_MIN=1380,MAX_DUR=240;
+const SLOTS=Array.from({length:(E_MIN-S_MIN)/SLOT},(_,i)=>S_MIN+i*SLOT);
+const DAYS=["월","화","수","목","금","토","일"];
+const ADMIN_PW="0923";
+const COLORS=["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#8b5cf6","#ec4899","#f43f5e","#06b6d4","#84cc16","#a855f7"];
+const WK_LABELS=["2주 전","지난 주","이번 주","다음 주","다다음 주"];
 
 function t2s(m){return `${Math.floor(m/60)}:${m%60===0?"00":"30"}`;}
 function durLabel(d){const h=Math.floor(d/60),m=d%60;return h===0?`${m}분`:m===0?`${h}시간`:`${h}시간 ${m}분`;}
@@ -24,6 +25,12 @@ function getDayRes(data,ymd){
   return Object.entries(v).map(([h,r])=>({...r,startMinute:Number(h)*60,duration:60,id:(r.at||Date.now()).toString(36)}));
 }
 
+// Firebase storage 래퍼
+const store={
+  async get(key){try{return await storage.get(key);}catch{return null;}},
+  async set(key,value){return await storage.set(key,value);}
+};
+
 const sel="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500";
 
 export default function App(){
@@ -41,22 +48,38 @@ export default function App(){
   const [syncing,setSyncing]=useState(false);
   const [modal,setModal]=useState(null);
 
-  const loadTeams=async()=>{try{const r=await window.storage.get("teams",true);return r?.value?JSON.parse(r.value):[];}catch{return[];}};
-  const saveTeams=async t=>{await window.storage.set("teams",JSON.stringify(t),true);setTeams(t);};
-  const loadFss=async()=>{try{const r=await window.storage.get("fixedSchedules",true);return r?.value?JSON.parse(r.value):[];}catch{return[];}};
-  const saveFss=async v=>{await window.storage.set("fixedSchedules",JSON.stringify(v),true);setFss(v);};
+  const loadTeams=async()=>{const r=await store.get("teams");return r?.value?JSON.parse(r.value):[];};
+  const saveTeams=async t=>{await store.set("teams",JSON.stringify(t));setTeams(t);};
+  const loadFss=async()=>{const r=await store.get("fixedSchedules");return r?.value?JSON.parse(r.value):[];};
+  const saveFss=async v=>{await store.set("fixedSchedules",JSON.stringify(v));setFss(v);};
 
   const sync=useCallback(async mon=>{
     setSyncing(true);
     const ds=Array.from({length:7},(_,i)=>addDays(mon,i));
     const[t,fs,...rows]=await Promise.all([
       loadTeams(),loadFss(),
-      ...ds.map(async d=>{const ymd=toYMD(d);try{const r=await window.storage.get(`resv:${ymd}`,true);return[ymd,r?.value?JSON.parse(r.value):[]];}catch{return[ymd,[]];}})
+      ...ds.map(async d=>{const ymd=toYMD(d);const r=await store.get(`resv:${ymd}`);return[ymd,r?.value?JSON.parse(r.value)]:[];})
     ]);
     setTeams(t);setFss(fs);setData(Object.fromEntries(rows));setSyncing(false);
   },[]);
 
-  useEffect(()=>{sync(monday);const t=setInterval(()=>sync(monday),12000);return()=>clearInterval(t);},[monday,sync]);
+  // Firebase 실시간 구독
+  useEffect(()=>{
+    const u1=storage.subscribe("teams",val=>{if(val)setTeams(JSON.parse(val));});
+    const u2=storage.subscribe("fixedSchedules",val=>{if(val)setFss(JSON.parse(val));});
+    return()=>{u1?.();u2?.();};
+  },[]);
+
+  useEffect(()=>{
+    sync(monday);
+    const unsubs=Array.from({length:7},(_,i)=>addDays(monday,i)).map(d=>{
+      const ymd=toYMD(d);
+      return storage.subscribe(`resv:${ymd}`,val=>{
+        setData(p=>({...p,[ymd]:val?JSON.parse(val):[]}));
+      });
+    });
+    return()=>unsubs.forEach(u=>u?.());
+  },[monday]);
 
   const handleAdminLogin=()=>{if(adminPw===ADMIN_PW){setAdminAuthed(true);setAdminPwErr(false);setAdminPw("");}else setAdminPwErr(true);};
   const createTeam=async(n,c,p)=>saveTeams([...teams,{id:uid(),name:n,color:c,password:p,createdAt:Date.now()}]);
@@ -69,14 +92,13 @@ export default function App(){
       return"ok";
     } else {
       const key=`resv:${ymd}`;
-      // 저장 직전 서버에서 최신 데이터로 다시 충돌 확인 (동시 예약 방지)
       let latest=[];
-      try{const r=await window.storage.get(key,true);if(r?.value)latest=JSON.parse(r.value);}catch{}
-      if(!Array.isArray(latest))latest=[];
+      const r=await store.get(key);
+      if(r?.value){const v=JSON.parse(r.value);latest=Array.isArray(v)?v:[];}
       if(latest.some(r=>overlaps(startMinute,duration,r.startMinute,r.duration)))return"conflict";
       const entry={id:uid(),teamId:team.id,teamName:team.name,teamColor:team.color,startMinute,duration,at:Date.now()};
       const day=[...latest,entry];
-      await window.storage.set(key,JSON.stringify(day),true);
+      await store.set(key,JSON.stringify(day));
       setData(p=>({...p,[ymd]:day}));
       return"ok";
     }
@@ -85,7 +107,7 @@ export default function App(){
   const doCancel=async(ymd,resId)=>{
     const key=`resv:${ymd}`;
     const day=getDayRes(data,ymd).filter(r=>r.id!==resId);
-    await window.storage.set(key,JSON.stringify(day),true);
+    await store.set(key,JSON.stringify(day));
     setData(p=>({...p,[ymd]:day}));
   };
 
@@ -126,14 +148,13 @@ export default function App(){
           ))}
         </div>
       </div>
-
       <div className="max-w-5xl mx-auto p-4">
         {tab==="general"?(
           <>
             <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
               <div>
                 <h1 className="text-xl font-bold text-indigo-400">동아리방 예약</h1>
-                <p className="text-xs text-gray-500 mt-0.5">{WK_LABELS[weekOffset+2]} · {syncing?"동기화 중…":"자동 갱신"}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{WK_LABELS[weekOffset+2]} · {syncing?"동기화 중…":"실시간 연동"}</p>
               </div>
               <div className="flex flex-col items-end gap-2">
                 <div className="flex gap-1">
@@ -149,7 +170,6 @@ export default function App(){
                 </div>
               </div>
             </div>
-
             <div className="overflow-x-auto">
               <table style={{minWidth:520,borderCollapse:"collapse",width:"100%"}}>
                 <thead>
@@ -182,27 +202,15 @@ export default function App(){
                           const isToday=ymd===todayStr;
                           if(cell.type==="covered")return null;
                           if(cell.type==="empty"){
-                            return(
-                              <td key={i} style={{
-                                background:isPast?"#0a0e17":isToday?"#11172e":"#161b22",
-                                border:"1px solid #1c2128",
-                                borderTop:isHour?"1px solid #2d333b":"1px solid #1c2128",
-                                opacity:isPast?0.4:1,
-                              }}/>
-                            );
+                            return(<td key={i} style={{background:isPast?"#0a0e17":isToday?"#11172e":"#161b22",border:"1px solid #1c2128",borderTop:isHour?"1px solid #2d333b":"1px solid #1c2128",opacity:isPast?0.4:1}}/>);
                           }
-                          const res=cell.res;
-                          const tc=res.teamColor||"#6366f1";
-                          const isFixed=res._type==="fixed";
-                          const span=res.duration/SLOT;
+                          const res=cell.res,tc=res.teamColor||"#6366f1",isFixed=res._type==="fixed",span=res.duration/SLOT;
                           return(
                             <td key={i} rowSpan={span}
                               onClick={()=>setModal({kind:"cancel",ymd,res,pwInput:"",pwErr:false})}
                               style={{backgroundColor:tc+(isFixed?"1a":"28"),borderLeft:`3px ${isFixed?"dashed":"solid"} ${tc}`,border:`1px solid ${tc}33`,cursor:"pointer",verticalAlign:"top",padding:"3px 4px"}}
                             >
-                              <div style={{color:tc,fontSize:11,fontWeight:700,lineHeight:1.3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                                {isFixed?"📌 ":""}{res.teamName}
-                              </div>
+                              <div style={{color:tc,fontSize:11,fontWeight:700,lineHeight:1.3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isFixed?"📌 ":""}{res.teamName}</div>
                               <div style={{color:tc+"aa",fontSize:10,lineHeight:1.2}}>{t2s(res.startMinute)}~{t2s(res.startMinute+res.duration)}</div>
                             </td>
                           );
@@ -213,12 +221,10 @@ export default function App(){
                 </tbody>
               </table>
             </div>
-
             <div className="flex gap-4 mt-3 text-xs text-gray-600 items-center">
               <span className="flex items-center gap-1.5"><span style={{display:"inline-block",width:12,height:12,borderRadius:2,background:"#3b82f628",borderLeft:"3px solid #3b82f6"}}/>일반 예약</span>
               <span className="flex items-center gap-1.5"><span style={{display:"inline-block",width:12,height:12,borderRadius:2,background:"#3b82f61a",borderLeft:"3px dashed #3b82f6"}}/>고정 일정</span>
             </div>
-
             <div className="mt-5">
               {teams.length>0?(
                 <><p className="text-xs text-gray-500 mb-2">팀을 선택해서 예약하세요</p>
@@ -342,14 +348,12 @@ function ModalRoot({modal,setModal,teams,dates,data,fss,doReserve,doCancel,cance
   const[busy,setBusy]=useState(false);
   const close=()=>setModal(null);
   const upd=u=>setModal(m=>({...m,...u}));
-
   const checkPw=()=>{if(modal.pwInput===modal.team.password)upd({step:2,pwErr:false});else upd({pwErr:true});};
-
   const selYMD=(modal.kind==="reserve"&&modal.step===2)?toYMD(dates[modal.dayIdx]):null;
   const conflict=selYMD?hasConflict(selYMD,modal.startMinute,modal.duration):false;
-  const maxDur=Math.min(MAX_DUR,E_MIN-modal.startMinute)||SLOT;
+  const maxDur=Math.min(MAX_DUR,E_MIN-(modal.startMinute||S_MIN));
   const durOptions=Array.from({length:maxDur/SLOT},(_,i)=>(i+1)*SLOT);
-  const endMinute=modal.startMinute+modal.duration;
+  const endMinute=(modal.startMinute||S_MIN)+(modal.duration||60);
   const tc=modal.team?.color||"#6366f1";
 
   const confirmReserve=async()=>{
@@ -358,90 +362,47 @@ function ModalRoot({modal,setModal,teams,dates,data,fss,doReserve,doCancel,cance
     const ymd=toYMD(dates[modal.dayIdx]);
     const result=await doReserve(ymd,modal.startMinute,modal.duration,modal.team,modal.fixed,modal.endDate);
     setBusy(false);
-    if(result==="conflict"){upd({conflict:true});} // 동시 예약 시 경고 표시
+    if(result==="conflict")upd({conflict:true});
     else close();
   };
 
   const confirmCancel=async mode=>{
     if(busy)return;
     const res=modal.res;
-    // ── 비밀번호 검증 (버그 수정) ──
     if(res?.teamId){
       const team=teams.find(t=>t.id===res.teamId);
-      if(team){
-        if((modal.pwInput||"")!==team.password){upd({pwErr:true});return;}
-      } else {
-        // 팀 정보 없음 → 취소 차단
-        if(!(modal.pwInput||"")){upd({pwErr:true});return;}
-      }
+      if(team){if((modal.pwInput||"")!==team.password){upd({pwErr:true});return;}}
+      else{if(!(modal.pwInput||"")){upd({pwErr:true});return;}}
     }
     setBusy(true);
-    if(res?._type==="fixed"){
-      if(mode==="single")await cancelFsDay(res.id,modal.ymd);
-      else await deleteFs(res.id);
-    } else {
-      await doCancel(modal.ymd,res.id);
-    }
+    if(res?._type==="fixed"){if(mode==="single")await cancelFsDay(res.id,modal.ymd);else await deleteFs(res.id);}
+    else await doCancel(modal.ymd,res.id);
     setBusy(false);close();
   };
 
   return(
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={close}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-2xl" style={{width:320}} onClick={e=>e.stopPropagation()}>
-
-        {/* ── Step 1: 비밀번호 ── */}
         {modal.kind==="reserve"&&modal.step===1&&(
           <>
-            <div className="flex items-center gap-3 mb-4">
-              <div style={{width:40,height:40,borderRadius:10,background:tc+"33",border:`2px solid ${tc}`,flexShrink:0}}/>
-              <div><h2 className="text-base font-bold text-gray-100">{modal.team.name}</h2><p className="text-xs text-gray-500">팀 비밀번호를 입력하세요</p></div>
-            </div>
+            <div className="flex items-center gap-3 mb-4"><div style={{width:40,height:40,borderRadius:10,background:tc+"33",border:`2px solid ${tc}`,flexShrink:0}}/><div><h2 className="text-base font-bold text-gray-100">{modal.team.name}</h2><p className="text-xs text-gray-500">팀 비밀번호를 입력하세요</p></div></div>
             <input type="password" autoFocus value={modal.pwInput} onChange={e=>upd({pwInput:e.target.value,pwErr:false})} onKeyDown={e=>e.key==="Enter"&&checkPw()} placeholder="비밀번호" className={sel} style={modal.pwErr?{borderColor:"#ef4444"}:{}}/>
             {modal.pwErr&&<p className="text-xs text-red-400 mt-1.5">비밀번호가 올바르지 않습니다</p>}
-            <div className="flex gap-2 mt-4">
-              <button onClick={close} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">취소</button>
-              <button onClick={checkPw} className="flex-1 py-2 rounded-lg text-sm font-bold text-white" style={{background:tc}}>다음</button>
-            </div>
+            <div className="flex gap-2 mt-4"><button onClick={close} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">취소</button><button onClick={checkPw} className="flex-1 py-2 rounded-lg text-sm font-bold text-white" style={{background:tc}}>다음</button></div>
           </>
         )}
-
-        {/* ── Step 2: 시간 선택 ── */}
         {modal.kind==="reserve"&&modal.step===2&&(
           <>
-            <div className="flex items-center gap-2 mb-4">
-              <div style={{width:10,height:10,borderRadius:3,background:tc,flexShrink:0}}/>
-              <h2 className="text-base font-bold text-gray-100">{modal.team.name} 예약</h2>
-            </div>
+            <div className="flex items-center gap-2 mb-4"><div style={{width:10,height:10,borderRadius:3,background:tc,flexShrink:0}}/><h2 className="text-base font-bold text-gray-100">{modal.team.name} 예약</h2></div>
             <div className="space-y-3 mb-4">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">요일</label>
-                <select value={modal.dayIdx} onChange={e=>upd({dayIdx:Number(e.target.value)})} className={sel}>
-                  {dates.map((d,i)=><option key={i} value={i}>{DAYS[i]} ({d.getMonth()+1}/{d.getDate()})</option>)}
-                </select>
-              </div>
+              <div><label className="text-xs text-gray-500 block mb-1">요일</label><select value={modal.dayIdx} onChange={e=>upd({dayIdx:Number(e.target.value)})} className={sel}>{dates.map((d,i)=><option key={i} value={i}>{DAYS[i]} ({d.getMonth()+1}/{d.getDate()})</option>)}</select></div>
               <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">시작 시간</label>
-                  <select value={modal.startMinute} onChange={e=>upd({startMinute:Number(e.target.value),duration:Math.min(modal.duration,Math.min(MAX_DUR,E_MIN-Number(e.target.value)))})} className={sel}>
-                    {SLOTS.map(s=><option key={s} value={s}>{t2s(s)}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">사용 시간</label>
-                  <select value={modal.duration} onChange={e=>upd({duration:Number(e.target.value)})} className={sel}>
-                    {durOptions.map(d=><option key={d} value={d}>{durLabel(d)}</option>)}
-                  </select>
-                </div>
+                <div><label className="text-xs text-gray-500 block mb-1">시작 시간</label><select value={modal.startMinute} onChange={e=>upd({startMinute:Number(e.target.value),duration:Math.min(modal.duration,Math.min(MAX_DUR,E_MIN-Number(e.target.value)))})} className={sel}>{SLOTS.map(s=><option key={s} value={s}>{t2s(s)}</option>)}</select></div>
+                <div><label className="text-xs text-gray-500 block mb-1">사용 시간</label><select value={modal.duration} onChange={e=>upd({duration:Number(e.target.value)})} className={sel}>{durOptions.map(d=><option key={d} value={d}>{durLabel(d)}</option>)}</select></div>
               </div>
-              <div className="bg-gray-950 rounded-lg px-3 py-2 flex items-center justify-between">
-                <span className="text-xs text-gray-500">종료 시간</span>
-                <span className="text-sm font-bold text-indigo-300">{t2s(endMinute)}</span>
-              </div>
+              <div className="bg-gray-950 rounded-lg px-3 py-2 flex items-center justify-between"><span className="text-xs text-gray-500">종료 시간</span><span className="text-sm font-bold text-indigo-300">{t2s(endMinute)}</span></div>
               {conflict&&<div className="text-xs text-amber-400 bg-amber-950 border border-amber-800 rounded-lg px-3 py-2">⚠️ 이미 예약된 시간과 겹칩니다</div>}
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={modal.fixed} onChange={e=>upd({fixed:e.target.checked})} className="w-4 h-4" style={{accentColor:tc}}/>
-                <span className="text-sm text-gray-300">📌 고정 일정 (매주 반복)</span>
-              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" checked={modal.fixed} onChange={e=>upd({fixed:e.target.checked})} className="w-4 h-4" style={{accentColor:tc}}/><span className="text-sm text-gray-300">📌 고정 일정 (매주 반복)</span></label>
               {modal.fixed&&(
                 <div className="bg-gray-950 border border-gray-700 rounded-lg p-3">
                   <label className="text-xs text-gray-400 block mb-2">종료일 <span className="text-gray-600">(5주 범위 밖도 가능)</span></label>
@@ -450,14 +411,9 @@ function ModalRoot({modal,setModal,teams,dates,data,fss,doReserve,doCancel,cance
                 </div>
               )}
             </div>
-            <div className="flex gap-2">
-              <button onClick={()=>upd({step:1})} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">이전</button>
-              <button onClick={confirmReserve} disabled={busy||conflict} className="flex-1 py-2 rounded-lg text-sm font-bold text-white disabled:opacity-50" style={{background:tc}}>{busy?"예약 중…":"예약 완료"}</button>
-            </div>
+            <div className="flex gap-2"><button onClick={()=>upd({step:1})} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">이전</button><button onClick={confirmReserve} disabled={busy||conflict} className="flex-1 py-2 rounded-lg text-sm font-bold text-white disabled:opacity-50" style={{background:tc}}>{busy?"예약 중…":"예약 완료"}</button></div>
           </>
         )}
-
-        {/* ── 취소 모달 ── */}
         {modal.kind==="cancel"&&(()=>{
           const res=modal.res,isFixed=res?._type==="fixed",rtc=res?.teamColor||"#a5b4fc";
           const dayIdx=dates.findIndex(d=>toYMD(d)===modal.ymd);
@@ -466,11 +422,7 @@ function ModalRoot({modal,setModal,teams,dates,data,fss,doReserve,doCancel,cance
               <h2 className="text-base font-bold text-gray-100 mb-1">예약 정보</h2>
               <p className="text-xs text-gray-500 mb-4">{modal.ymd} {dayIdx>=0?DAYS[dayIdx]:""} · {t2s(res.startMinute)} ~ {t2s(res.startMinute+res.duration)} ({durLabel(res.duration)})</p>
               <div className="bg-gray-950 border border-gray-800 rounded-lg p-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <div style={{width:10,height:10,borderRadius:2,background:rtc,flexShrink:0}}/>
-                  <span className="text-sm font-bold" style={{color:rtc}}>{res?.teamName||"예약"}</span>
-                  {isFixed&&<span className="text-xs">📌</span>}
-                </div>
+                <div className="flex items-center gap-2"><div style={{width:10,height:10,borderRadius:2,background:rtc,flexShrink:0}}/><span className="text-sm font-bold" style={{color:rtc}}>{res?.teamName||"예약"}</span>{isFixed&&<span className="text-xs">📌</span>}</div>
                 {isFixed&&<p className="text-xs text-amber-400 mt-1">매주 반복 · {res.endDate}까지</p>}
               </div>
               {res?.teamId&&(
@@ -483,16 +435,10 @@ function ModalRoot({modal,setModal,teams,dates,data,fss,doReserve,doCancel,cance
               {isFixed?(
                 <div className="space-y-2">
                   <button onClick={()=>confirmCancel("single")} disabled={busy} className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200 disabled:opacity-50">이 날만 취소</button>
-                  <div className="flex gap-2">
-                    <button onClick={close} className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-400">닫기</button>
-                    <button onClick={()=>confirmCancel("all")} disabled={busy} className="flex-1 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-bold text-red-200 disabled:opacity-50">{busy?"처리 중…":"전체 삭제"}</button>
-                  </div>
+                  <div className="flex gap-2"><button onClick={close} className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-400">닫기</button><button onClick={()=>confirmCancel("all")} disabled={busy} className="flex-1 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-bold text-red-200 disabled:opacity-50">{busy?"처리 중…":"전체 삭제"}</button></div>
                 </div>
               ):(
-                <div className="flex gap-2">
-                  <button onClick={close} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">닫기</button>
-                  <button onClick={()=>confirmCancel("single")} disabled={busy} className="flex-1 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-bold text-red-200 disabled:opacity-50">{busy?"처리 중…":"예약 취소"}</button>
-                </div>
+                <div className="flex gap-2"><button onClick={close} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">닫기</button><button onClick={()=>confirmCancel("single")} disabled={busy} className="flex-1 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-bold text-red-200 disabled:opacity-50">{busy?"처리 중…":"예약 취소"}</button></div>
               )}
             </>
           );
