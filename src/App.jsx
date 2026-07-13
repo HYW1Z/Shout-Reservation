@@ -261,7 +261,7 @@ export default function App(){
       </div>
       {modal&&<ModalRoot modal={modal} setModal={setModal} teams={teams} dates={dates} data={data} fss={fss} doReserve={doReserve} doCancel={doCancel} cancelFsDay={cancelFsDay} deleteFs={deleteFs} hasConflict={hasConflict}/>}
       <footer style={{marginTop:48,paddingBottom:24,textAlign:"center"}}>
-        <p style={{fontSize:11,color:"#4d5562"}}>이 사이트는 박기남이 제작했습니다. © 2026 All rights reserved.</p>
+        <p style={{fontSize:11,color:"#4d5562"}}>이 사이트는 함성의 동아리 부원인 박기남이 제작하였으며, 무단 복제 및 배포를 금합니다. © 2026 All rights reserved.</p>
       </footer>
     </div>
   );
