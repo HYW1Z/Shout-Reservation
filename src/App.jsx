@@ -58,7 +58,8 @@ export default function App(){
     const ds=Array.from({length:7},(_,i)=>addDays(mon,i));
     const[t,fs,...rows]=await Promise.all([
       loadTeams(),loadFss(),
-      ...ds.map(async d=>{const ymd=toYMD(d);const r=await store.get(`resv:${ymd}`);return[ymd,r?.value?JSON.parse(r.value)]:[];})
+      ...ds.map(async d=>{const ymd=toYMD(d);const r=await store.get(`resv:${ymd}`);return[ymd,r?.value?JSON.parse(r.value):[]];})
+
     ]);
     setTeams(t);setFss(fs);setData(Object.fromEntries(rows));setSyncing(false);
   },[]);
