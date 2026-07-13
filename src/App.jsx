@@ -154,7 +154,7 @@ export default function App(){
           <>
             <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
               <div>
-                <h1 className="text-xl font-bold text-indigo-400">동아리방 예약</h1>
+                <h1 className="text-xl font-bold text-indigo-400">함성 동아리방 사용 일정</h1>
                 <p className="text-xs text-gray-500 mt-0.5">{WK_LABELS[weekOffset+2]} · {syncing?"동기화 중…":"실시간 연동"}</p>
               </div>
               <div className="flex flex-col items-end gap-2">
@@ -260,6 +260,9 @@ export default function App(){
         )}
       </div>
       {modal&&<ModalRoot modal={modal} setModal={setModal} teams={teams} dates={dates} data={data} fss={fss} doReserve={doReserve} doCancel={doCancel} cancelFsDay={cancelFsDay} deleteFs={deleteFs} hasConflict={hasConflict}/>}
+      <footer style={{marginTop:48,paddingBottom:24,textAlign:"center"}}>
+        <p style={{fontSize:11,color:"#4d5562"}}>이 사이트는 박기남이 제작했습니다. © 2026 All rights reserved.</p>
+      </footer>
     </div>
   );
 }
@@ -272,14 +275,20 @@ function AdminPanel({teams,fss,onCreate,onUpdate,onDelete,onDeleteFs,onLogout}){
   const[busy,setBusy]=useState(false);
   const[delId,setDelId]=useState(null);
   const[delFsId,setDelFsId]=useState(null);
+  const[submitErr,setSubmitErr]=useState("");
   const sf=k=>e=>setForm(f=>({...f,[k]:e.target.value}));
-  const reset=()=>{setForm({name:"",color:COLORS[5],password:""});setEditId(null);setShowForm(false);};
+  const reset=()=>{setForm({name:"",color:COLORS[5],password:""});setEditId(null);setShowForm(false);setSubmitErr("");};
   const startEdit=t=>{setForm({name:t.name,color:t.color,password:t.password});setEditId(t.id);setShowForm(true);};
   const submit=async()=>{
     if(!form.name.trim()||!form.password.trim())return;
-    setBusy(true);
-    try{if(editId)await onUpdate(editId,{name:form.name.trim(),color:form.color,password:form.password.trim()});else await onCreate(form.name.trim(),form.color,form.password.trim());reset();}
-    finally{setBusy(false);}
+    setBusy(true);setSubmitErr("");
+    try{
+      if(editId)await onUpdate(editId,{name:form.name.trim(),color:form.color,password:form.password.trim()});
+      else await onCreate(form.name.trim(),form.color,form.password.trim());
+      reset();
+    }catch(e){
+      setSubmitErr("오류: "+(e?.message||String(e)));
+    }finally{setBusy(false);}
   };
   return(
     <div>
@@ -304,6 +313,7 @@ function AdminPanel({teams,fss,onCreate,onUpdate,onDelete,onDeleteFs,onLogout}){
                   <button onClick={reset} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-200">취소</button>
                   <button onClick={submit} disabled={busy||!form.name.trim()||!form.password.trim()} className="flex-1 py-2 bg-indigo-700 hover:bg-indigo-600 rounded-lg text-sm font-bold text-white disabled:opacity-50">{busy?"저장 중…":editId?"수정 완료":"팀 생성"}</button>
                 </div>
+                {submitErr&&<p className="text-xs text-red-400 mt-2 p-2 bg-red-950 rounded-lg break-all">{submitErr}</p>}
               </div>
             </div>
           )}
